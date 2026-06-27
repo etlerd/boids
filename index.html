@@ -402,6 +402,7 @@ class Hawk {
           for (let i = 0; i < n; i++) flock.push(new Boid());
           hawks = [];
           poisonBoid = new PoisonBoid();
+          flock.unshift(poisonBoid);
         }, 1500);
       }
       // Spook nearby boids
@@ -560,70 +561,20 @@ const POISON_CHASE_RADIUS = 280;
 const POISON_ENERGY_DRAIN = 1 / 200;
 const POISON_RECHARGE_RATE = 1 / 280;
 
-class PoisonBoid {
+class PoisonBoid extends Boid {
   constructor() {
-    this.x = Math.random() * W;
-    this.y = Math.random() * H;
-    const a = Math.random() * Math.PI * 2;
-    this.vx = Math.cos(a) * params.maxSpeed;
-    this.vy = Math.sin(a) * params.maxSpeed;
-    this.angle = a;
+    super();
+    this.isPoison = true;
     this.energy = 1.0;
     this.chasing = false;
     this.exhausted = false;
-    this.isPoison = true;
     this.size = 6;
+    this.baseColor = '#22cc55';
+    this.color = '#22cc55';
   }
 
-  update() {
-    let nearestHawk = null, nearestDist = Infinity;
-    for (const h of hawks) {
-      const dx = h.x - this.x, dy = h.y - this.y;
-      const d = Math.sqrt(dx*dx + dy*dy);
-      if (d < nearestDist) { nearestDist = d; nearestHawk = h; }
-    }
-
-    if (!this.exhausted && nearestHawk && nearestDist < POISON_CHASE_RADIUS) {
-      this.chasing = true;
-      const dx = nearestHawk.x - this.x, dy = nearestHawk.y - this.y;
-      const d = Math.sqrt(dx*dx + dy*dy) || 1;
-      this.vx += (dx / d) * 0.5;
-      this.vy += (dy / d) * 0.5;
-      const spd = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
-      if (spd > POISON_SPEED_CHASE) { this.vx = this.vx/spd*POISON_SPEED_CHASE; this.vy = this.vy/spd*POISON_SPEED_CHASE; }
-      this.energy -= POISON_ENERGY_DRAIN;
-      if (this.energy <= 0) { this.energy = 0; this.exhausted = true; this.chasing = false; }
-    } else {
-      this.chasing = false;
-      if (this.exhausted) {
-        this.energy += POISON_RECHARGE_RATE;
-        if (this.energy >= 1) { this.energy = 1; this.exhausted = false; }
-        this.vx *= 0.96; this.vy *= 0.96;
-      }
-      // Drift toward flock centroid
-      if (flock.length > 0) {
-        let cx = 0, cy = 0;
-        for (const b of flock) { if (!b.isPoison) { cx += b.x; cy += b.y; } }
-        cx /= flock.length; cy /= flock.length;
-        const dx = cx - this.x, dy = cy - this.y;
-        const d = Math.sqrt(dx*dx + dy*dy) || 1;
-        const pull = this.exhausted ? 0.04 : 0.018;
-        this.vx += (dx/d) * pull * Math.min(d / 80, 1);
-        this.vy += (dy/d) * pull * Math.min(d / 80, 1);
-        const spd = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
-        const cap = params.maxSpeed * 1.1;
-        if (spd > cap) { this.vx = this.vx/spd*cap; this.vy = this.vy/spd*cap; }
-      }
-    }
-
-    this.angle = Math.atan2(this.vy, this.vx);
-    this.x += this.vx;
-    this.y += this.vy;
-    if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx); }
-    if (this.x > W) { this.x = W; this.vx = -Math.abs(this.vx); }
-    if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy); }
-    if (this.y > H) { this.y = H; this.vy = -Math.abs(this.vy); }
-  }
+  // Movement handled by the main boid loop (idle/exhausted = full flocking;
+  // chasing = velocity pre-set, position-only update via continue path).
 
   draw() {
     const s = this.size;
@@ -671,6 +622,7 @@ class PoisonBoid {
 }
 
 let poisonBoid = new PoisonBoid();
+flock.unshift(poisonBoid); // index 0 — safe from slider trimming (which trims from end)
 
 function updateHUD() {
   document.getElementById('scoreDisplay').textContent = 'KILLS: ' + score;
@@ -690,6 +642,7 @@ function triggerGameOver() {
     const n = parseInt(document.getElementById('boidcount').value);
     flock = Array.from({length: n}, () => new Boid());
     poisonBoid = new PoisonBoid();
+    flock.unshift(poisonBoid);
     document.getElementById('gameOverDisplay').style.display = 'none';
     updateHUD();
   }, 3000);
@@ -795,9 +748,9 @@ function limit(vx, vy, max) {
 }
 
 function triggerSpookCascade() {
-  // Pick one random boid to spook
-  const seed = flock[Math.floor(Math.random() * flock.length)];
-  seed.spook();
+  const regulars = flock.filter(b => !b.isPoison);
+  if (!regulars.length) return;
+  regulars[Math.floor(Math.random() * regulars.length)].spook();
 }
 
 function updateSpooks() {
@@ -848,10 +801,43 @@ function updateSpooks() {
 
 function update() {
   updateSpooks();
+
+  // Poison boid activation pre-pass (runs before main loop so velocity is set)
+  if (poisonBoid) {
+    let nearestHawk = null, nearestDist = Infinity;
+    for (const h of hawks) {
+      const dx = h.x - poisonBoid.x, dy = h.y - poisonBoid.y;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d < nearestDist) { nearestDist = d; nearestHawk = h; }
+    }
+    if (!poisonBoid.exhausted && nearestHawk && nearestDist < POISON_CHASE_RADIUS) {
+      poisonBoid.chasing = true;
+      const dx = nearestHawk.x - poisonBoid.x, dy = nearestHawk.y - poisonBoid.y;
+      const d = Math.sqrt(dx*dx + dy*dy) || 1;
+      poisonBoid.vx = (dx/d) * POISON_SPEED_CHASE;
+      poisonBoid.vy = (dy/d) * POISON_SPEED_CHASE;
+      poisonBoid.energy -= POISON_ENERGY_DRAIN;
+      if (poisonBoid.energy <= 0) { poisonBoid.energy = 0; poisonBoid.exhausted = true; poisonBoid.chasing = false; }
+    } else {
+      poisonBoid.chasing = false;
+      if (poisonBoid.exhausted) {
+        poisonBoid.energy += POISON_RECHARGE_RATE;
+        if (poisonBoid.energy >= 1) { poisonBoid.energy = 1; poisonBoid.exhausted = false; }
+      }
+    }
+  }
+
   const ms = params.maxSpeed;
   const minSpeed = ms * 0.4;
 
   for (const b of flock) {
+    // Chasing poison boid: velocity already set above — just move it and skip flocking
+    if (b.isPoison && b.chasing) {
+      b.x += b.vx; b.y += b.vy;
+      b.x = Math.max(0, Math.min(W, b.x));
+      b.y = Math.max(0, Math.min(H, b.y));
+      continue;
+    }
     const near = around(b);
     const _nf = neighborForces(near, b);
     const sepX = _nf.sepX, sepY = _nf.sepY, cohX = _nf.cohX, cohY = _nf.cohY;
@@ -1013,6 +999,8 @@ function draw() {
   ctx.fillRect(0, 0, W, H);
 
   for (const b of flock) {
+    if (b.isPoison) { b.draw(); continue; }
+
     const angle = Math.atan2(b.vy, b.vx);
     const s = b.size;
 
@@ -1303,11 +1291,9 @@ function loop() {
     update();
     applyTapZones();
     for (const hawk of hawks) hawk.update();
-    if (poisonBoid) poisonBoid.update();
     draw();
     drawTapZones();
     for (const hawk of hawks) hawk.draw();
-    if (poisonBoid) poisonBoid.draw();
     try { updateAudio(); } catch(ae) {
       if (!loopErrorShown) {
         loopErrorShown = true;
