@@ -55,6 +55,7 @@
 <body>
 <canvas id="c"></canvas>
 
+<div id="audioStatus" style="position:fixed;bottom:8px;left:8px;color:rgba(255,255,0,0.8);font-family:monospace;font-size:11px;pointer-events:none;">Audio: not started</div>
 <div id="controls">
   <div class="slider-row">
     <label>SEPARATION <span id="ls">0.8</span></label>
@@ -957,11 +958,13 @@ loop();
 
 canvas.addEventListener('pointerdown', function(e) {
   e.preventDefault();
-  initAudio(); // start AudioContext on first interaction
+  initAudio();
+  if (audioCtx) {
+    document.getElementById('audioStatus').textContent = 'Audio: ' + audioCtx.state;
+  }
   const rect = canvas.getBoundingClientRect();
   addTapZone(e.clientX - rect.left, e.clientY - rect.top);
 });
 </script>
 </body>
 </html>
- 
