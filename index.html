@@ -813,22 +813,33 @@ let audioMuted = false;
 
 function initAudio() {
   if (audioCtx) {
-    // Resume if suspended (iOS requires this on every gesture)
     if (audioCtx.state === 'suspended') audioCtx.resume();
     return;
   }
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
   masterGain = audioCtx.createGain();
-  masterGain.gain.value = 0.7;
+  masterGain.gain.value = 1.0;
   masterGain.connect(audioCtx.destination);
 
-  // Flock drone — two detuned sines
+  // Test tone on init — confirms audio path is working
+  const test = audioCtx.createOscillator();
+  const testG = audioCtx.createGain();
+  test.type = 'sine';
+  test.frequency.value = 440;
+  testG.gain.setValueAtTime(0.4, audioCtx.currentTime);
+  testG.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+  test.connect(testG);
+  testG.connect(masterGain);
+  test.start();
+  test.stop(audioCtx.currentTime + 0.5);
+
+  // Flock drone
   flockDrone = audioCtx.createOscillator();
   flockDrone.type = 'sine';
   flockDrone.frequency.value = 80;
   droneGain = audioCtx.createGain();
-  droneGain.gain.value = 0.08;
+  droneGain.gain.value = 0.25;
   flockDrone.connect(droneGain);
   droneGain.connect(masterGain);
   flockDrone.start();
@@ -837,12 +848,12 @@ function initAudio() {
   drone2.type = 'sine';
   drone2.frequency.value = 81.5;
   droneGain2 = audioCtx.createGain();
-  droneGain2.gain.value = 0.05;
+  droneGain2.gain.value = 0.15;
   drone2.connect(droneGain2);
   droneGain2.connect(masterGain);
   drone2.start();
 
-  // Hawk tension — filtered sawtooth
+  // Hawk tension
   hawkTone = audioCtx.createOscillator();
   hawkTone.type = 'sawtooth';
   hawkTone.frequency.value = 300;
