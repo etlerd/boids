@@ -105,7 +105,11 @@
     <input type="range" id="boidcount" min="10" max="500" step="10" value="60">
   </div>
   <div class="slider-row">
-    <button id="calmBtn" style="
+    <label>INDIVIDUALITY <span id="lind">0</span>%</label>
+    <input type="range" id="individuality" min="0" max="30" step="1" value="0">
+  </div>
+  <div class="slider-row">
+    <button id="hawkBtn" style="
       background: none;
       border: 1px solid rgba(255,255,255,0.25);
       color: rgba(255,255,255,0.65);
@@ -115,7 +119,20 @@
       padding: 6px 12px;
       cursor: pointer;
       width: 140px;
-    ">CALM</button>
+    ">HAWK</button>
+  </div>
+  <div class="slider-row">
+    <button id="muteBtn" style="
+      background: none;
+      border: 1px solid rgba(255,255,255,0.25);
+      color: rgba(255,255,255,0.65);
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      padding: 6px 12px;
+      cursor: pointer;
+      width: 140px;
+    ">♪ SOUND ON</button>
   </div>
 </div>
 
@@ -145,7 +162,8 @@ let params = {
   density: 0.60,
   banking: 0.50,
   smoothing: 0.55,
-  turnRate: 0.06
+  turnRate: 0.06,
+  individuality: 0  // % variation per trait per boid (0-5)
 };
 
 // Wire up sliders
@@ -172,23 +190,21 @@ wire('banking','banking','lbnk',null);
 wire('smoothing','smoothing','lsmth',null);
 wire('turnrate','turnRate','ltr',null);
 
-function initCalmButton() {
-  document.getElementById('calmBtn').addEventListener('click', function() {
-    for (const b of flock) {
-      b.spookTimer = 0;
-      b.spookImpulseFrames = 0;
-      b.spookFx = 0; b.spookFy = 0;
-      b.canSpread = false;
-      b.sfx = 0; b.sfy = 0;
-      b.color = b.baseColor;
-      const spd = Math.sqrt(b.vx*b.vx + b.vy*b.vy);
-      if (spd > 0.01) {
-        b.vx = b.vx / spd * params.maxSpeed;
-        b.vy = b.vy / spd * params.maxSpeed;
-      }
-    }
-  });
-}
+// Individuality slider — custom wiring since label has % suffix
+document.getElementById('individuality').addEventListener('input', function() {
+  params.individuality = parseFloat(this.value);
+  document.getElementById('lind').textContent = this.value;
+  // Resample all existing boids' trait multipliers
+  for (const b of flock) {
+    b.tSep     = traitVariance();
+    b.tAli     = traitVariance();
+    b.tCoh     = traitVariance();
+    b.tSpeed   = traitVariance();
+    b.tTurn    = traitVariance();
+    b.tInertia = traitVariance();
+  }
+});
+
 function initBoidCountSlider() {
   document.getElementById('boidcount').addEventListener('input', function() {
     const n = parseInt(this.value);
@@ -215,6 +231,12 @@ function spookInterval() {
 let nextSpookIn = spookInterval();
 let frameCount = 0;
 
+// Returns a multiplier centered on 1.0, varying ±pct%
+function traitVariance() {
+  const pct = params.individuality / 100;
+  return 1.0 + (Math.random() * 2 - 1) * pct;
+}
+
 // Boid class
 class Boid {
   constructor() {
@@ -231,8 +253,14 @@ class Boid {
     this.canSpread = false;
     this.prevAngle = Math.atan2(this.vy, this.vx);
     this.bankTilt = 0;
-    // EMA steering force accumulators for smoothing
     this.sfx = 0; this.sfy = 0;
+    // Per-boid trait multipliers — resampled when individuality changes
+    this.tSep     = traitVariance();
+    this.tAli     = traitVariance();
+    this.tCoh     = traitVariance();
+    this.tSpeed   = traitVariance();
+    this.tTurn    = traitVariance();
+    this.tInertia = traitVariance();
   }
 
   spook() {
@@ -259,7 +287,152 @@ class Boid {
 
 let flock = Array.from({length: 60}, () => new Boid());
 initBoidCountSlider();
-initCalmButton();
+
+// Hawk system — declared after flock and Boid
+const HAWK_SPEED_CRUISE = 2.2;
+const HAWK_SPEED_CHASE  = 5.5;
+const HAWK_VISION_ANGLE = Math.PI * 0.6; // ~108° cone — wide enough to reliably acquire
+const HAWK_VISION_DIST  = 180;
+const HAWK_KILL_DIST    = 10;
+const HAWK_TURN_RATE    = 0.045;
+let hawks = [];
+
+class Hawk {
+  constructor() {
+    const edge = Math.floor(Math.random() * 4);
+    if (edge === 0) { this.x = Math.random() * W; this.y = 0; }
+    else if (edge === 1) { this.x = W; this.y = Math.random() * H; }
+    else if (edge === 2) { this.x = Math.random() * W; this.y = H; }
+    else { this.x = 0; this.y = Math.random() * H; }
+    const a = Math.random() * Math.PI * 2;
+    this.vx = Math.cos(a) * HAWK_SPEED_CRUISE;
+    this.vy = Math.sin(a) * HAWK_SPEED_CRUISE;
+    this.angle = a;
+    this.target = null;
+    this.chasing = false;
+    this.stuckTimer = 0; // frames without acquiring — forces heading reset
+  }
+
+  update() {
+    this.target = null;
+    let bestDist = Infinity;
+    for (const b of flock) {
+      const dx = b.x - this.x, dy = b.y - this.y;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d > HAWK_VISION_DIST) continue;
+      const angleToB = Math.atan2(dy, dx);
+      let diff = angleToB - this.angle;
+      if (diff > Math.PI) diff -= 2 * Math.PI;
+      if (diff < -Math.PI) diff += 2 * Math.PI;
+      if (Math.abs(diff) < HAWK_VISION_ANGLE && d < bestDist) {
+        bestDist = d; this.target = b;
+      }
+    }
+    this.chasing = !!this.target;
+    if (this.chasing) {
+      this.stuckTimer = 0;
+      const dx = this.target.x - this.x, dy = this.target.y - this.y;
+      const desired = Math.atan2(dy, dx);
+      let turn = desired - this.angle;
+      if (turn > Math.PI) turn -= 2 * Math.PI;
+      if (turn < -Math.PI) turn += 2 * Math.PI;
+      this.angle += Math.sign(turn) * Math.min(Math.abs(turn), HAWK_TURN_RATE * 2.5);
+      for (const b of flock) {
+        const dx2 = b.x - this.x, dy2 = b.y - this.y;
+        if (dx2*dx2 + dy2*dy2 < HAWK_VISION_DIST * HAWK_VISION_DIST) b.spook();
+      }
+    } else {
+      this.stuckTimer++;
+      // After 90 frames without a target, snap heading directly at flock centroid
+      if (this.stuckTimer > 90 && flock.length > 0) {
+        let cx = 0, cy = 0;
+        for (const b of flock) { cx += b.x; cy += b.y; }
+        cx /= flock.length; cy /= flock.length;
+        this.angle = Math.atan2(cy - this.y, cx - this.x);
+        this.stuckTimer = 0;
+      } else if (flock.length > 0) {
+        // Lazy turn toward centroid — clamped to prevent spiral accumulation
+        let cx = 0, cy = 0;
+        for (const b of flock) { cx += b.x; cy += b.y; }
+        cx /= flock.length; cy /= flock.length;
+        const desired = Math.atan2(cy - this.y, cx - this.x);
+        let turn = desired - this.angle;
+        if (turn > Math.PI) turn -= 2 * Math.PI;
+        if (turn < -Math.PI) turn += 2 * Math.PI;
+        // Hard clamp: never more than HAWK_TURN_RATE per frame in cruise
+        this.angle += Math.sign(turn) * Math.min(Math.abs(turn), HAWK_TURN_RATE);
+      }
+      // Edge avoidance — additive but bounded
+      const margin = 120;
+      const ea = 0.05;
+      if (this.x < margin) this.angle += ea * Math.pow(1 - this.x / margin, 2);
+      if (this.x > W - margin) this.angle -= ea * Math.pow(1 - (W - this.x) / margin, 2);
+      if (this.y < margin) this.angle += ea * Math.pow(1 - this.y / margin, 2);
+      if (this.y > H - margin) this.angle -= ea * Math.pow(1 - (H - this.y) / margin, 2);
+    }
+    const spd = this.chasing ? HAWK_SPEED_CHASE : HAWK_SPEED_CRUISE;
+    this.vx = Math.cos(this.angle) * spd;
+    this.vy = Math.sin(this.angle) * spd;
+    this.x += this.vx;
+    this.y += this.vy;
+    if (this.target) {
+      const dx = this.target.x - this.x, dy = this.target.y - this.y;
+      if (dx*dx + dy*dy < HAWK_KILL_DIST * HAWK_KILL_DIST) {
+        const idx = flock.indexOf(this.target);
+        if (idx !== -1) flock.splice(idx, 1);
+        playKillSound();
+        this.target = null;
+        if (flock.length === 0) {
+          setTimeout(() => {
+            const n = parseInt(document.getElementById('boidcount').value);
+            for (let i = 0; i < n; i++) flock.push(new Boid());
+            hawks = [];
+            playRespawnSound();
+          }, 1500);
+        }
+      }
+    }
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.angle);
+    const s = this.chasing ? 9 : 7;
+    ctx.beginPath();
+    ctx.moveTo(s * 2.5, 0);
+    ctx.lineTo(-s, s * 1.1);
+    ctx.lineTo(-s * 0.4, 0);
+    ctx.lineTo(-s, -s * 1.1);
+    ctx.closePath();
+    ctx.fillStyle = this.chasing ? '#ff4400' : '#cc8800';
+    ctx.fill();
+    if (!this.chasing) {
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, HAWK_VISION_DIST * 0.4, -HAWK_VISION_ANGLE, HAWK_VISION_ANGLE);
+      ctx.closePath();
+      ctx.strokeStyle = 'rgba(255,180,0,0.12)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function initHawkButton() {
+  document.getElementById('hawkBtn').addEventListener('click', function() {
+    initAudio();
+    hawks.push(new Hawk());
+  });
+  document.getElementById('muteBtn').addEventListener('click', function() {
+    initAudio();
+    audioMuted = !audioMuted;
+    if (masterGain) masterGain.gain.setTargetAtTime(audioMuted ? 0 : 0.7, audioCtx.currentTime, 0.05);
+    this.textContent = audioMuted ? '♪ SOUND OFF' : '♪ SOUND ON';
+  });
+}
+initHawkButton();
 
 function around(b) {
   const neighbors = [];
@@ -402,6 +575,20 @@ function update() {
       cohScale = Math.max(0.1, 1.0 - localDensity * params.density * 0.8);
     }
 
+    // Hawk evasion — boids flee any hawk within panic radius
+    for (const hawk of hawks) {
+      const hdx = b.x - hawk.x, hdy = b.y - hawk.y;
+      const hd2 = hdx*hdx + hdy*hdy;
+      const panicR = 140;
+      if (hd2 < panicR * panicR) {
+        const hd = Math.sqrt(hd2) || 0.01;
+        const strength = (panicR - hd) / panicR;
+        b.vx += (hdx / hd) * strength * 1.5;
+        b.vy += (hdy / hd) * strength * 1.5;
+        b.spook();
+      }
+    }
+
     // Edge avoidance applied BEFORE smoothing so it doesn't accumulate in EMA.
     // When near a wall, also reset the force accumulator so smoothing doesn't
     // fight the avoidance for several frames afterward.
@@ -419,8 +606,8 @@ function update() {
       b.sfx = 0; b.sfy = 0;
     }
 
-    let dvx = params.ali * ali.x + params.coh * cohScale * cohX;
-    let dvy = params.ali * ali.y + params.coh * cohScale * cohY;
+    let dvx = params.ali * b.tAli * ali.x + params.coh * cohScale * b.tCoh * cohX;
+    let dvy = params.ali * b.tAli * ali.y + params.coh * cohScale * b.tCoh * cohY;
 
     if (params.smoothing > 0) {
       const a = params.smoothing;
@@ -436,9 +623,9 @@ function update() {
     if (params.inertia > 0) {
       const targetVx = b.vx + dvx;
       const targetVy = b.vy + dvy;
-      const t = 1.0 - params.inertia;
-      b.vx += (targetVx - b.vx) * t;
-      b.vy += (targetVy - b.vy) * t;
+      const t = 1.0 - params.inertia * b.tInertia;
+      b.vx += (targetVx - b.vx) * Math.max(0.02, t);
+      b.vy += (targetVy - b.vy) * Math.max(0.02, t);
     } else {
       b.vx += dvx;
       b.vy += dvy;
@@ -461,7 +648,7 @@ function update() {
     }
 
     // Speed cap + minimum speed floor
-    const speedCap = b.spookTimer > 0 ? ms * 2.4 : ms;
+    const speedCap = b.spookTimer > 0 ? ms * b.tSpeed * 2.4 : ms * b.tSpeed;
     const lv = limit(b.vx, b.vy, speedCap);
     b.vx = lv.x; b.vy = lv.y;
 
@@ -481,7 +668,7 @@ function update() {
     }
 
     // Turn rate clamp: limit how fast heading changes per frame
-    const maxTurn = b.spookTimer > 0 ? params.turnRate * 3 : params.turnRate;
+    const maxTurn = b.spookTimer > 0 ? params.turnRate * b.tTurn * 3 : params.turnRate * b.tTurn;
     const curAngle = Math.atan2(b.vy, b.vx);
     let dAngle = curAngle - b.prevAngle;
     if (dAngle > Math.PI) dAngle -= 2 * Math.PI;
@@ -522,8 +709,8 @@ function update() {
     b.y += b.vy;
 
     // Separation as positional nudge — no heading change
-    b.x += sepX * params.sep * 0.6;
-    b.y += sepY * params.sep * 0.6;
+    b.x += sepX * params.sep * b.tSep * 0.6;
+    b.y += sepY * params.sep * b.tSep * 0.6;
 
     // Hard clamp
     b.x = Math.max(0, Math.min(W, b.x));
@@ -612,12 +799,157 @@ function drawTapZones() {
   }
 }
 
+// ── AUDIO SYSTEM ──────────────────────────────────────────────────────────
+let audioCtx   = null;
+let masterGain = null;
+let flockDrone = null;
+let drone2     = null;
+let droneGain  = null;
+let droneGain2 = null;
+let hawkTone   = null;
+let hawkGain   = null;
+let audioMuted = false;
+
+function initAudio() {
+  if (audioCtx) {
+    // Resume if suspended (iOS requires this on every gesture)
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return;
+  }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.7;
+  masterGain.connect(audioCtx.destination);
+
+  // Flock drone — two detuned sines
+  flockDrone = audioCtx.createOscillator();
+  flockDrone.type = 'sine';
+  flockDrone.frequency.value = 80;
+  droneGain = audioCtx.createGain();
+  droneGain.gain.value = 0.08;
+  flockDrone.connect(droneGain);
+  droneGain.connect(masterGain);
+  flockDrone.start();
+
+  drone2 = audioCtx.createOscillator();
+  drone2.type = 'sine';
+  drone2.frequency.value = 81.5;
+  droneGain2 = audioCtx.createGain();
+  droneGain2.gain.value = 0.05;
+  drone2.connect(droneGain2);
+  droneGain2.connect(masterGain);
+  drone2.start();
+
+  // Hawk tension — filtered sawtooth
+  hawkTone = audioCtx.createOscillator();
+  hawkTone.type = 'sawtooth';
+  hawkTone.frequency.value = 300;
+  const hawkFilter = audioCtx.createBiquadFilter();
+  hawkFilter.type = 'bandpass';
+  hawkFilter.frequency.value = 350;
+  hawkFilter.Q.value = 6;
+  hawkGain = audioCtx.createGain();
+  hawkGain.gain.value = 0.0;
+  hawkTone.connect(hawkFilter);
+  hawkFilter.connect(hawkGain);
+  hawkGain.connect(masterGain);
+  hawkTone.start();
+}
+
+function playKillSound() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const osc = audioCtx.createOscillator();
+  const g   = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(500, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(60, audioCtx.currentTime + 0.25);
+  g.gain.setValueAtTime(0.25, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+  osc.connect(g);
+  g.connect(masterGain);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.3);
+}
+
+function playSpookSound() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const bufSize = Math.floor(audioCtx.sampleRate * 0.15);
+  const buf  = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const f = audioCtx.createBiquadFilter();
+  f.type = 'highpass';
+  f.frequency.value = 4000;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.12, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+  src.connect(f); f.connect(g); g.connect(masterGain);
+  src.start();
+}
+
+function playRespawnSound() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  [220, 277, 330, 440].forEach((freq, i) => {
+    const osc = audioCtx.createOscillator();
+    const g   = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const t = audioCtx.currentTime + i * 0.1;
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.15, t + 0.15);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+    osc.connect(g); g.connect(masterGain);
+    osc.start(t);
+    osc.stop(t + 1.0);
+  });
+}
+
+function updateAudio() {
+  if (!audioCtx || audioCtx.state !== 'running' || flock.length === 0) return;
+  const now = audioCtx.currentTime;
+
+  // Flock spread → drone pitch and volume
+  let cx = 0, cy = 0;
+  for (const b of flock) { cx += b.x; cy += b.y; }
+  cx /= flock.length; cy /= flock.length;
+  let spread = 0;
+  for (const b of flock) {
+    const dx = b.x - cx, dy = b.y - cy;
+    spread += Math.sqrt(dx*dx + dy*dy);
+  }
+  spread /= flock.length;
+  const coherence = Math.min(spread / (Math.min(W, H) * 0.4), 1.0);
+
+  const pitch = 55 + coherence * 90;
+  const vol   = 0.06 + coherence * 0.12;
+  flockDrone.frequency.setTargetAtTime(pitch, now, 0.8);
+  drone2.frequency.setTargetAtTime(pitch + 1.5, now, 0.8);
+  droneGain.gain.setTargetAtTime(vol, now, 0.5);
+  droneGain2.gain.setTargetAtTime(vol * 0.6, now, 0.5);
+
+  // Hawk chasing → tension swell
+  const anyChasing = hawks.some(h => h.chasing);
+  hawkGain.gain.setTargetAtTime(anyChasing ? 0.15 : 0.0, now, anyChasing ? 0.08 : 0.5);
+  hawkTone.frequency.setTargetAtTime(250 + coherence * 180, now, 0.3);
+
+  // Spook shimmer — occasional burst when flock is panicking
+  const spookedFrac = flock.filter(b => b.spookTimer > 0).length / flock.length;
+  if (spookedFrac > 0.25 && Math.random() < 0.04) playSpookSound();
+}
+// ── END AUDIO ─────────────────────────────────────────────────────────────
+
 function loop() {
   updateTapZones();
   update();
   applyTapZones();
+  for (const hawk of hawks) hawk.update();
   draw();
   drawTapZones();
+  for (const hawk of hawks) hawk.draw();
+  updateAudio();
   requestAnimationFrame(loop);
 }
 
@@ -625,6 +957,7 @@ loop();
 
 canvas.addEventListener('pointerdown', function(e) {
   e.preventDefault();
+  initAudio(); // start AudioContext on first interaction
   const rect = canvas.getBoundingClientRect();
   addTapZone(e.clientX - rect.left, e.clientY - rect.top);
 });
