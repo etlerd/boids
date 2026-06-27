@@ -54,7 +54,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div style="position:fixed;top:4px;left:4px;color:rgba(255,255,255,0.25);font-size:9px;font-family:monospace;pointer-events:none;">v1</div>
+<div style="position:fixed;top:4px;left:4px;color:rgba(255,255,255,0.25);font-size:9px;font-family:monospace;pointer-events:none;">v2</div>
 
 <div id="audioStatus" style="position:fixed;bottom:8px;left:8px;color:rgba(255,255,0,0.8);font-family:monospace;font-size:11px;pointer-events:none;">Audio: not started</div>
 <div id="controls">
@@ -429,8 +429,9 @@ function initHawkButton() {
   });
   document.getElementById('muteBtn').addEventListener('click', function() {
     initAudio();
+    if (!audioReady) return;
     audioMuted = !audioMuted;
-    if (masterGain) masterGain.gain.setTargetAtTime(audioMuted ? 0 : 0.7, audioCtx.currentTime, 0.05);
+    masterGain.gain.setTargetAtTime(audioMuted ? 0 : 1.0, audioCtx.currentTime, 0.05);
     this.textContent = audioMuted ? '♪ SOUND OFF' : '♪ SOUND ON';
   });
 }
@@ -811,63 +812,68 @@ let droneGain2 = null;
 let hawkTone   = null;
 let hawkGain   = null;
 let audioMuted = false;
+let audioReady = false;
 
 function initAudio() {
-  if (audioCtx) {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    return;
+  if (audioReady) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 1.0;
+    masterGain.connect(audioCtx.destination);
+
+    // Immediate test tone — single oscillator direct to destination
+    // bypasses masterGain to rule out any gain node issue
+    const test = audioCtx.createOscillator();
+    test.type = 'sine';
+    test.frequency.value = 440;
+    const testG = audioCtx.createGain();
+    testG.gain.value = 0.5;
+    test.connect(testG);
+    testG.connect(audioCtx.destination);
+    test.start(audioCtx.currentTime);
+    test.stop(audioCtx.currentTime + 0.5);
+
+    // Flock drone
+    flockDrone = audioCtx.createOscillator();
+    flockDrone.type = 'sine';
+    flockDrone.frequency.value = 80;
+    droneGain = audioCtx.createGain();
+    droneGain.gain.value = 0.3;
+    flockDrone.connect(droneGain);
+    droneGain.connect(masterGain);
+    flockDrone.start();
+
+    drone2 = audioCtx.createOscillator();
+    drone2.type = 'sine';
+    drone2.frequency.value = 81.5;
+    droneGain2 = audioCtx.createGain();
+    droneGain2.gain.value = 0.2;
+    drone2.connect(droneGain2);
+    droneGain2.connect(masterGain);
+    drone2.start();
+
+    // Hawk tension
+    hawkTone = audioCtx.createOscillator();
+    hawkTone.type = 'sawtooth';
+    hawkTone.frequency.value = 300;
+    const hawkFilter = audioCtx.createBiquadFilter();
+    hawkFilter.type = 'bandpass';
+    hawkFilter.frequency.value = 350;
+    hawkFilter.Q.value = 6;
+    hawkGain = audioCtx.createGain();
+    hawkGain.gain.value = 0.0;
+    hawkTone.connect(hawkFilter);
+    hawkFilter.connect(hawkGain);
+    hawkGain.connect(masterGain);
+    hawkTone.start();
+
+    audioReady = true;
+    document.getElementById('audioStatus').textContent = 'Audio: ' + audioCtx.state;
+  } catch(e) {
+    document.getElementById('audioStatus').textContent = 'Audio error: ' + e.message;
   }
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-  masterGain = audioCtx.createGain();
-  masterGain.gain.value = 1.0;
-  masterGain.connect(audioCtx.destination);
-
-  // Test tone on init — confirms audio path is working
-  const test = audioCtx.createOscillator();
-  const testG = audioCtx.createGain();
-  test.type = 'sine';
-  test.frequency.value = 440;
-  testG.gain.setValueAtTime(0.4, audioCtx.currentTime);
-  testG.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
-  test.connect(testG);
-  testG.connect(masterGain);
-  test.start();
-  test.stop(audioCtx.currentTime + 0.5);
-
-  // Flock drone
-  flockDrone = audioCtx.createOscillator();
-  flockDrone.type = 'sine';
-  flockDrone.frequency.value = 80;
-  droneGain = audioCtx.createGain();
-  droneGain.gain.value = 0.25;
-  flockDrone.connect(droneGain);
-  droneGain.connect(masterGain);
-  flockDrone.start();
-
-  drone2 = audioCtx.createOscillator();
-  drone2.type = 'sine';
-  drone2.frequency.value = 81.5;
-  droneGain2 = audioCtx.createGain();
-  droneGain2.gain.value = 0.15;
-  drone2.connect(droneGain2);
-  droneGain2.connect(masterGain);
-  drone2.start();
-
-  // Hawk tension
-  hawkTone = audioCtx.createOscillator();
-  hawkTone.type = 'sawtooth';
-  hawkTone.frequency.value = 300;
-  const hawkFilter = audioCtx.createBiquadFilter();
-  hawkFilter.type = 'bandpass';
-  hawkFilter.frequency.value = 350;
-  hawkFilter.Q.value = 6;
-  hawkGain = audioCtx.createGain();
-  hawkGain.gain.value = 0.0;
-  hawkTone.connect(hawkFilter);
-  hawkFilter.connect(hawkGain);
-  hawkGain.connect(masterGain);
-  hawkTone.start();
 }
 
 function playKillSound() {
@@ -968,12 +974,9 @@ function loop() {
 
 loop();
 
-// Audio unlock on touchstart — no preventDefault so iOS audio session isn't disrupted
-canvas.addEventListener('touchstart', function(e) {
+// iOS Safari requires audio unlock on touchend, not touchstart
+canvas.addEventListener('touchend', function(e) {
   initAudio();
-  if (audioCtx) {
-    document.getElementById('audioStatus').textContent = 'Audio: ' + audioCtx.state;
-  }
 }, { passive: true });
 
 canvas.addEventListener('pointerdown', function(e) {
