@@ -81,6 +81,9 @@
     transition:transform 0.05s;
   "></div>
 </div>
+<div id="scoreDisplay" style="position:fixed;top:24px;left:24px;color:rgba(255,255,255,0.7);font-family:'DM Mono',monospace;font-size:13px;letter-spacing:0.08em;pointer-events:none;">KILLS: 0</div>
+<div id="livesDisplay" style="position:fixed;top:44px;left:24px;color:rgba(204,68,255,0.85);font-family:'DM Mono',monospace;font-size:14px;letter-spacing:0.1em;pointer-events:none;">&#9670; &#9670; &#9670;</div>
+<div id="gameOverDisplay" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-family:'DM Mono',monospace;font-size:36px;letter-spacing:0.2em;display:none;text-align:center;pointer-events:none;text-shadow:0 0 30px rgba(255,80,80,0.8);">GAME OVER</div>
 <div id="controls">
   <div class="slider-row">
     <label>SEPARATION <span id="ls">0.8</span></label>
@@ -332,6 +335,9 @@ const HAWK_VISION_DIST  = 180;
 const HAWK_KILL_DIST    = 10;
 const HAWK_TURN_RATE    = 0.045;
 let hawks = [];
+let score = 0;
+let hawkLives = 3;
+let gameOver = false;
 
 class Hawk {
   constructor() {
@@ -351,6 +357,7 @@ class Hawk {
     this.controlled = false;   // true = player controlled
     this.controlVx = 0;        // joystick input velocity
     this.controlVy = 0;
+    this.invTimer = 0;         // invincibility frames after poison hit
   }
 
   update() {
@@ -369,12 +376,24 @@ class Hawk {
       }
       this.x += this.vx;
       this.y += this.vy;
-      // Still kill boids when controlled
+      // Check poison boid collision
+      if (this.invTimer === 0 && poisonBoid) {
+        const pdx = poisonBoid.x - this.x, pdy = poisonBoid.y - this.y;
+        if (pdx*pdx + pdy*pdy < (HAWK_KILL_DIST * 2.5) * (HAWK_KILL_DIST * 2.5)) {
+          hawkLives--;
+          this.invTimer = 150;
+          updateHUD();
+          if (hawkLives <= 0) triggerGameOver(); else playHawkHit();
+        }
+      }
+      if (this.invTimer > 0) this.invTimer--;
+      // Still kill boids when controlled (poison boid is immune)
       for (const b of flock) {
+        if (b.isPoison) continue;
         const dx = b.x - this.x, dy = b.y - this.y;
         if (dx*dx + dy*dy < HAWK_KILL_DIST * HAWK_KILL_DIST) {
           const idx = flock.indexOf(b);
-          if (idx !== -1) { flock.splice(idx, 1); playKillSound(); break; }
+          if (idx !== -1) { flock.splice(idx, 1); score++; updateHUD(); playKillSound(); break; }
         }
       }
       if (flock.length === 0) {
@@ -382,6 +401,7 @@ class Hawk {
           const n = parseInt(document.getElementById('boidcount').value);
           for (let i = 0; i < n; i++) flock.push(new Boid());
           hawks = [];
+          poisonBoid = new PoisonBoid();
         }, 1500);
       }
       // Spook nearby boids
@@ -401,6 +421,7 @@ class Hawk {
     this.target = null;
     let bestDist = Infinity;
     for (const b of flock) {
+      if (b.isPoison) continue;
       const dx = b.x - this.x, dy = b.y - this.y;
       const d = Math.sqrt(dx*dx + dy*dy);
       if (d > HAWK_VISION_DIST) continue;
@@ -456,6 +477,20 @@ class Hawk {
       if (this.x > W - margin) this.angle -= ea * Math.pow(1 - (W - this.x) / margin, 2);
       if (this.y < margin) this.angle += ea * Math.pow(1 - this.y / margin, 2);
       if (this.y > H - margin) this.angle -= ea * Math.pow(1 - (H - this.y) / margin, 2);
+      // Steer away from poison boid
+      if (poisonBoid && !poisonBoid.exhausted) {
+        const pdx = this.x - poisonBoid.x, pdy = this.y - poisonBoid.y;
+        const pd = Math.sqrt(pdx*pdx + pdy*pdy) || 1;
+        const POISON_AVOID_R = 180;
+        if (pd < POISON_AVOID_R) {
+          const avoidAngle = Math.atan2(pdy, pdx);
+          let diff = avoidAngle - this.angle;
+          if (diff > Math.PI) diff -= 2*Math.PI;
+          if (diff < -Math.PI) diff += 2*Math.PI;
+          const str = 0.1 * (1 - pd / POISON_AVOID_R);
+          this.angle += Math.sign(diff) * Math.min(Math.abs(diff), str);
+        }
+      }
     }
     const spd = this.chasing ? HAWK_SPEED_CHASE : HAWK_SPEED_CRUISE;
     this.vx = Math.cos(this.angle) * spd;
@@ -466,7 +501,7 @@ class Hawk {
       const dx = this.target.x - this.x, dy = this.target.y - this.y;
       if (dx*dx + dy*dy < HAWK_KILL_DIST * HAWK_KILL_DIST) {
         const idx = flock.indexOf(this.target);
-        if (idx !== -1) flock.splice(idx, 1);
+        if (idx !== -1) { flock.splice(idx, 1); score++; updateHUD(); }
         playKillSound();
         this.target = null;
         if (flock.length === 0) {
@@ -474,13 +509,26 @@ class Hawk {
             const n = parseInt(document.getElementById('boidcount').value);
             for (let i = 0; i < n; i++) flock.push(new Boid());
             hawks = [];
+            poisonBoid = new PoisonBoid();
           }, 1500);
         }
       }
     }
+    // Poison boid collision (autonomous hawk)
+    if (this.invTimer === 0 && poisonBoid) {
+      const pdx = poisonBoid.x - this.x, pdy = poisonBoid.y - this.y;
+      if (pdx*pdx + pdy*pdy < (HAWK_KILL_DIST * 2.5) * (HAWK_KILL_DIST * 2.5)) {
+        hawkLives--;
+        this.invTimer = 150;
+        updateHUD();
+        if (hawkLives <= 0) triggerGameOver(); else playHawkHit();
+      }
+    }
+    if (this.invTimer > 0) this.invTimer--;
   }
 
   draw() {
+    if (this.invTimer > 0 && Math.floor(this.invTimer / 6) % 2 === 1) return;
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle);
@@ -505,6 +553,148 @@ class Hawk {
     ctx.restore();
   }
 }
+
+// ── POISON BOID ───────────────────────────────────────────────────────────
+const POISON_SPEED_CHASE = 4.0;
+const POISON_CHASE_RADIUS = 280;
+const POISON_ENERGY_DRAIN = 1 / 200;
+const POISON_RECHARGE_RATE = 1 / 280;
+
+class PoisonBoid {
+  constructor() {
+    this.x = Math.random() * W;
+    this.y = Math.random() * H;
+    const a = Math.random() * Math.PI * 2;
+    this.vx = Math.cos(a) * params.maxSpeed;
+    this.vy = Math.sin(a) * params.maxSpeed;
+    this.angle = a;
+    this.energy = 1.0;
+    this.chasing = false;
+    this.exhausted = false;
+    this.isPoison = true;
+    this.size = 6;
+  }
+
+  update() {
+    let nearestHawk = null, nearestDist = Infinity;
+    for (const h of hawks) {
+      const dx = h.x - this.x, dy = h.y - this.y;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d < nearestDist) { nearestDist = d; nearestHawk = h; }
+    }
+
+    if (!this.exhausted && nearestHawk && nearestDist < POISON_CHASE_RADIUS) {
+      this.chasing = true;
+      const dx = nearestHawk.x - this.x, dy = nearestHawk.y - this.y;
+      const d = Math.sqrt(dx*dx + dy*dy) || 1;
+      this.vx += (dx / d) * 0.5;
+      this.vy += (dy / d) * 0.5;
+      const spd = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
+      if (spd > POISON_SPEED_CHASE) { this.vx = this.vx/spd*POISON_SPEED_CHASE; this.vy = this.vy/spd*POISON_SPEED_CHASE; }
+      this.energy -= POISON_ENERGY_DRAIN;
+      if (this.energy <= 0) { this.energy = 0; this.exhausted = true; this.chasing = false; }
+    } else {
+      this.chasing = false;
+      if (this.exhausted) {
+        this.energy += POISON_RECHARGE_RATE;
+        if (this.energy >= 1) { this.energy = 1; this.exhausted = false; }
+        this.vx *= 0.96; this.vy *= 0.96;
+      }
+      // Drift toward flock centroid
+      if (flock.length > 0) {
+        let cx = 0, cy = 0;
+        for (const b of flock) { if (!b.isPoison) { cx += b.x; cy += b.y; } }
+        cx /= flock.length; cy /= flock.length;
+        const dx = cx - this.x, dy = cy - this.y;
+        const d = Math.sqrt(dx*dx + dy*dy) || 1;
+        const pull = this.exhausted ? 0.04 : 0.018;
+        this.vx += (dx/d) * pull * Math.min(d / 80, 1);
+        this.vy += (dy/d) * pull * Math.min(d / 80, 1);
+        const spd = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
+        const cap = params.maxSpeed * 1.1;
+        if (spd > cap) { this.vx = this.vx/spd*cap; this.vy = this.vy/spd*cap; }
+      }
+    }
+
+    this.angle = Math.atan2(this.vy, this.vx);
+    this.x += this.vx;
+    this.y += this.vy;
+    if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx); }
+    if (this.x > W) { this.x = W; this.vx = -Math.abs(this.vx); }
+    if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy); }
+    if (this.y > H) { this.y = H; this.vy = -Math.abs(this.vy); }
+  }
+
+  draw() {
+    const s = this.size;
+    const t = Date.now() / 1000;
+    let fill;
+    if (this.exhausted) {
+      fill = `hsl(120,25%,${18 + this.energy * 22}%)`;
+    } else if (this.chasing) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 10);
+      fill = `hsl(${105 + pulse * 30},100%,${48 + pulse * 14}%)`;
+    } else {
+      fill = '#22cc55';
+    }
+
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.angle);
+
+    // Glow when chasing
+    if (this.chasing) {
+      ctx.shadowColor = '#00ff44';
+      ctx.shadowBlur = 12;
+    }
+    ctx.beginPath();
+    ctx.moveTo(s * 2.2, 0);
+    ctx.lineTo(-s, s * 0.7);
+    ctx.lineTo(-s * 0.5, 0);
+    ctx.lineTo(-s, -s * 0.7);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // Energy bar (shown when chasing or exhausted)
+    if (this.chasing || this.exhausted) {
+      const bw = 22, bh = 3;
+      const bx = this.x - bw / 2, by = this.y - s * 2.5;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = this.exhausted ? '#ff5500' : '#00ff55';
+      ctx.fillRect(bx, by, bw * this.energy, bh);
+    }
+  }
+}
+
+let poisonBoid = new PoisonBoid();
+
+function updateHUD() {
+  document.getElementById('scoreDisplay').textContent = 'KILLS: ' + score;
+  let hearts = '';
+  for (let i = 0; i < 3; i++) hearts += (i < hawkLives ? '◆' : '◇') + ' ';
+  document.getElementById('livesDisplay').textContent = hearts.trim();
+}
+
+function triggerGameOver() {
+  gameOver = true;
+  playHawkDirge();
+  document.getElementById('gameOverDisplay').style.display = 'block';
+  setTimeout(() => {
+    gameOver = false;
+    hawkLives = 3;
+    hawks = [];
+    const n = parseInt(document.getElementById('boidcount').value);
+    flock = Array.from({length: n}, () => new Boid());
+    poisonBoid = new PoisonBoid();
+    document.getElementById('gameOverDisplay').style.display = 'none';
+    updateHUD();
+  }, 3000);
+}
+// ── END POISON BOID ────────────────────────────────────────────────────────
 
 function initHawkButton() {
   document.getElementById('hawkBtn').addEventListener('click', function() {
@@ -1031,6 +1221,54 @@ function playHawkScreech() {
   mod.stop(now + 0.9); osc.stop(now + 0.9);
 }
 
+function playHawkHit() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const g   = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(220, now);
+  osc.frequency.exponentialRampToValueAtTime(80, now + 0.4);
+  g.gain.setValueAtTime(0.3, now);
+  g.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+  osc.connect(g); g.connect(masterGain);
+  osc.start(now); osc.stop(now + 0.5);
+}
+
+function playHawkDirge() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const now = audioCtx.currentTime;
+  // Descending minor-key tolling: three slow falling notes
+  const notes = [
+    { freq: 440, start: 0,   dur: 0.7 },
+    { freq: 370, start: 0.6, dur: 0.7 },
+    { freq: 311, start: 1.2, dur: 1.2 },
+  ];
+  for (const n of notes) {
+    const osc = audioCtx.createOscillator();
+    const g   = audioCtx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(n.freq, now + n.start);
+    osc.frequency.exponentialRampToValueAtTime(n.freq * 0.85, now + n.start + n.dur);
+    g.gain.setValueAtTime(0.0, now + n.start);
+    g.gain.linearRampToValueAtTime(0.28, now + n.start + 0.06);
+    g.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
+    osc.connect(g); g.connect(masterGain);
+    osc.start(now + n.start);
+    osc.stop(now + n.start + n.dur + 0.05);
+  }
+  // Low rumble underneath
+  const rumble = audioCtx.createOscillator();
+  const rg = audioCtx.createGain();
+  rumble.type = 'sine';
+  rumble.frequency.value = 55;
+  rg.gain.setValueAtTime(0.0, now);
+  rg.gain.linearRampToValueAtTime(0.18, now + 0.1);
+  rg.gain.exponentialRampToValueAtTime(0.001, now + 2.6);
+  rumble.connect(rg); rg.connect(masterGain);
+  rumble.start(now); rumble.stop(now + 2.7);
+}
+
 function updateAudio() {
   if (!audioReady || !audioCtx || audioCtx.state !== 'running') return;
   if (!flockDrone || !drone2 || !droneGain || !droneGain2) return;
@@ -1065,9 +1303,11 @@ function loop() {
     update();
     applyTapZones();
     for (const hawk of hawks) hawk.update();
+    if (poisonBoid) poisonBoid.update();
     draw();
     drawTapZones();
     for (const hawk of hawks) hawk.draw();
+    if (poisonBoid) poisonBoid.draw();
     try { updateAudio(); } catch(ae) {
       if (!loopErrorShown) {
         loopErrorShown = true;
