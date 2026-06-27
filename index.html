@@ -389,9 +389,11 @@ class Hawk {
         const dx2 = b.x - this.x, dy2 = b.y - this.y;
         if (dx2*dx2 + dy2*dy2 < HAWK_VISION_DIST * HAWK_VISION_DIST) b.spook();
       }
-      // Wrap edges
-      if (this.x < 0) this.x += W; if (this.x > W) this.x -= W;
-      if (this.y < 0) this.y += H; if (this.y > H) this.y -= H;
+      // Clamp to edges — stop at wall, don't wrap
+      if (this.x < 0) { this.x = 0; if (this.controlVx < 0) this.controlVx = 0; }
+      if (this.x > W) { this.x = W; if (this.controlVx > 0) this.controlVx = 0; }
+      if (this.y < 0) { this.y = 0; if (this.controlVy < 0) this.controlVy = 0; }
+      if (this.y > H) { this.y = H; if (this.controlVy > 0) this.controlVy = 0; }
       return;
     }
 
