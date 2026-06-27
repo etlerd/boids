@@ -967,12 +967,16 @@ function loop() {
 
 loop();
 
-canvas.addEventListener('pointerdown', function(e) {
-  e.preventDefault();
+// Audio unlock on touchstart — no preventDefault so iOS audio session isn't disrupted
+canvas.addEventListener('touchstart', function(e) {
   initAudio();
   if (audioCtx) {
     document.getElementById('audioStatus').textContent = 'Audio: ' + audioCtx.state;
   }
+}, { passive: true });
+
+canvas.addEventListener('pointerdown', function(e) {
+  e.preventDefault();
   const rect = canvas.getBoundingClientRect();
   addTapZone(e.clientX - rect.left, e.clientY - rect.top);
 });
