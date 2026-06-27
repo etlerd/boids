@@ -54,9 +54,33 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div style="position:fixed;top:4px;left:4px;color:rgba(255,255,255,0.25);font-size:9px;font-family:monospace;pointer-events:none;">v11</div>
+<div style="position:fixed;top:4px;left:4px;color:rgba(255,255,255,0.25);font-size:9px;font-family:monospace;pointer-events:none;">v18</div>
+<audio id="silenceUnlock" src="silence.mp3" preload="auto"></audio>
 
 <div id="audioStatus" style="position:fixed;bottom:8px;left:8px;color:rgba(255,255,0,0.8);font-family:monospace;font-size:11px;pointer-events:none;">Audio: not started</div>
+<div id="joystickPad" style="
+  position:fixed;
+  bottom:24px;
+  left:24px;
+  width:110px;
+  height:110px;
+  border-radius:50%;
+  border:2px solid rgba(204,68,255,0.4);
+  background:rgba(204,68,255,0.08);
+  touch-action:none;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+">
+  <div id="joystickKnob" style="
+    width:36px;
+    height:36px;
+    border-radius:50%;
+    background:rgba(204,68,255,0.5);
+    pointer-events:none;
+    transition:transform 0.05s;
+  "></div>
+</div>
 <div id="controls">
   <div class="slider-row">
     <label>SEPARATION <span id="ls">0.8</span></label>
@@ -322,10 +346,56 @@ class Hawk {
     this.angle = a;
     this.target = null;
     this.chasing = false;
-    this.stuckTimer = 0; // frames without acquiring — forces heading reset
+    this.stuckTimer = 0;
+    this.wasChasing = false;
+    this.controlled = false;   // true = player controlled
+    this.controlVx = 0;        // joystick input velocity
+    this.controlVy = 0;
   }
 
   update() {
+    if (this.controlled) {
+      // Player controlled — follow joystick input
+      const spd = Math.sqrt(this.controlVx*this.controlVx + this.controlVy*this.controlVy);
+      if (spd > 0.01) {
+        this.angle = Math.atan2(this.controlVy, this.controlVx);
+        this.vx = this.controlVx;
+        this.vy = this.controlVy;
+      } else {
+        // Finger lifted — circle gently
+        this.angle += 0.025;
+        this.vx = Math.cos(this.angle) * HAWK_SPEED_CRUISE;
+        this.vy = Math.sin(this.angle) * HAWK_SPEED_CRUISE;
+      }
+      this.x += this.vx;
+      this.y += this.vy;
+      // Still kill boids when controlled
+      for (const b of flock) {
+        const dx = b.x - this.x, dy = b.y - this.y;
+        if (dx*dx + dy*dy < HAWK_KILL_DIST * HAWK_KILL_DIST) {
+          const idx = flock.indexOf(b);
+          if (idx !== -1) { flock.splice(idx, 1); playKillSound(); break; }
+        }
+      }
+      if (flock.length === 0) {
+        setTimeout(() => {
+          const n = parseInt(document.getElementById('boidcount').value);
+          for (let i = 0; i < n; i++) flock.push(new Boid());
+          hawks = [];
+        }, 1500);
+      }
+      // Spook nearby boids
+      for (const b of flock) {
+        const dx2 = b.x - this.x, dy2 = b.y - this.y;
+        if (dx2*dx2 + dy2*dy2 < HAWK_VISION_DIST * HAWK_VISION_DIST) b.spook();
+      }
+      // Wrap edges
+      if (this.x < 0) this.x += W; if (this.x > W) this.x -= W;
+      if (this.y < 0) this.y += H; if (this.y > H) this.y -= H;
+      return;
+    }
+
+    // Autonomous mode
     this.target = null;
     let bestDist = Infinity;
     for (const b of flock) {
@@ -340,7 +410,10 @@ class Hawk {
         bestDist = d; this.target = b;
       }
     }
+    const prevChasing = this.wasChasing;
     this.chasing = !!this.target;
+    if (this.chasing && !prevChasing) playHawkAha();
+    this.wasChasing = this.chasing;
     if (this.chasing) {
       this.stuckTimer = 0;
       const dx = this.target.x - this.x, dy = this.target.y - this.y;
@@ -399,7 +472,6 @@ class Hawk {
             const n = parseInt(document.getElementById('boidcount').value);
             for (let i = 0; i < n; i++) flock.push(new Boid());
             hawks = [];
-            playRespawnSound();
           }, 1500);
         }
       }
@@ -417,7 +489,7 @@ class Hawk {
     ctx.lineTo(-s * 0.4, 0);
     ctx.lineTo(-s, -s * 1.1);
     ctx.closePath();
-    ctx.fillStyle = this.chasing ? '#ff4400' : '#cc8800';
+    ctx.fillStyle = this.controlled ? '#cc44ff' : (this.chasing ? '#ff4400' : '#cc8800');
     ctx.fill();
     if (!this.chasing) {
       ctx.beginPath();
@@ -437,6 +509,7 @@ function initHawkButton() {
     try {
       initAudio();
       hawks.push(new Hawk());
+      playHawkScreech();
     } catch(e) {
       document.getElementById('audioStatus').textContent = 'hawk err: ' + e.message;
     }
@@ -891,20 +964,6 @@ function buildAudioGraph() {
   drone2.connect(droneGain2);
   droneGain2.connect(masterGain);
   drone2.start();
-
-  hawkTone = audioCtx.createOscillator();
-  hawkTone.type = 'sawtooth';
-  hawkTone.frequency.value = 300;
-  const hawkFilter = audioCtx.createBiquadFilter();
-  hawkFilter.type = 'bandpass';
-  hawkFilter.frequency.value = 350;
-  hawkFilter.Q.value = 6;
-  hawkGain = audioCtx.createGain();
-  hawkGain.gain.value = 0.0;
-  hawkTone.connect(hawkFilter);
-  hawkFilter.connect(hawkGain);
-  hawkGain.connect(masterGain);
-  hawkTone.start();
 }
 
 function playKillSound() {
@@ -922,44 +981,57 @@ function playKillSound() {
   osc.stop(audioCtx.currentTime + 0.3);
 }
 
-function playSpookSound() {
+function playHawkAha() {
   if (!audioCtx || audioCtx.state !== 'running') return;
-  const bufSize = Math.floor(audioCtx.sampleRate * 0.15);
-  const buf  = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1);
-  const src = audioCtx.createBufferSource();
-  src.buffer = buf;
-  const f = audioCtx.createBiquadFilter();
-  f.type = 'highpass';
-  f.frequency.value = 4000;
-  const g = audioCtx.createGain();
-  g.gain.setValueAtTime(0.12, audioCtx.currentTime);
-  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
-  src.connect(f); f.connect(g); g.connect(masterGain);
-  src.start();
-}
-
-function playRespawnSound() {
-  if (!audioCtx || audioCtx.state !== 'running') return;
-  [220, 277, 330, 440].forEach((freq, i) => {
+  const now = audioCtx.currentTime;
+  // Two quick rising tones — "aha!" shape
+  [0, 0.08].forEach(function(offset, i) {
     const osc = audioCtx.createOscillator();
     const g   = audioCtx.createGain();
     osc.type = 'sine';
-    osc.frequency.value = freq;
-    const t = audioCtx.currentTime + i * 0.1;
-    g.gain.setValueAtTime(0.001, t);
-    g.gain.linearRampToValueAtTime(0.15, t + 0.15);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
-    osc.connect(g); g.connect(masterGain);
-    osc.start(t);
-    osc.stop(t + 1.0);
+    const freq = i === 0 ? 520 : 780;
+    osc.frequency.setValueAtTime(freq * 0.85, now + offset);
+    osc.frequency.exponentialRampToValueAtTime(freq, now + offset + 0.06);
+    g.gain.setValueAtTime(0.0, now + offset);
+    g.gain.linearRampToValueAtTime(0.22, now + offset + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.12);
+    osc.connect(g);
+    g.connect(masterGain);
+    osc.start(now + offset);
+    osc.stop(now + offset + 0.15);
   });
+}
+
+function playHawkScreech() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  // Descending screech: fast FM sweep from high to mid with vibrato
+  const now = audioCtx.currentTime;
+  const osc  = audioCtx.createOscillator();
+  const mod  = audioCtx.createOscillator(); // vibrato modulator
+  const modG = audioCtx.createGain();
+  const g    = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(1800, now);
+  osc.frequency.exponentialRampToValueAtTime(600, now + 0.35);
+  osc.frequency.exponentialRampToValueAtTime(900, now + 0.55);
+  osc.frequency.exponentialRampToValueAtTime(400, now + 0.8);
+  mod.type = 'sine';
+  mod.frequency.value = 18;
+  modG.gain.value = 60;
+  mod.connect(modG);
+  modG.connect(osc.frequency);
+  g.gain.setValueAtTime(0.0, now);
+  g.gain.linearRampToValueAtTime(0.3, now + 0.05);
+  g.gain.exponentialRampToValueAtTime(0.001, now + 0.85);
+  osc.connect(g);
+  g.connect(masterGain);
+  mod.start(now); osc.start(now);
+  mod.stop(now + 0.9); osc.stop(now + 0.9);
 }
 
 function updateAudio() {
   if (!audioReady || !audioCtx || audioCtx.state !== 'running') return;
-  if (!flockDrone || !drone2 || !droneGain || !droneGain2 || !hawkGain || !hawkTone) return;
+  if (!flockDrone || !drone2 || !droneGain || !droneGain2) return;
   if (flock.length === 0) return;
   const now = audioCtx.currentTime;
 
@@ -981,15 +1053,6 @@ function updateAudio() {
   drone2.frequency.setTargetAtTime(pitch + 1.5, now, 0.8);
   droneGain.gain.setTargetAtTime(vol, now, 0.5);
   droneGain2.gain.setTargetAtTime(vol * 0.6, now, 0.5);
-
-  // Hawk chasing → tension swell
-  const anyChasing = hawks.some(h => h.chasing);
-  hawkGain.gain.setTargetAtTime(anyChasing ? 0.15 : 0.0, now, anyChasing ? 0.08 : 0.5);
-  hawkTone.frequency.setTargetAtTime(250 + coherence * 180, now, 0.3);
-
-  // Spook shimmer — occasional burst when flock is panicking
-  const spookedFrac = flock.filter(b => b.spookTimer > 0).length / flock.length;
-  if (spookedFrac > 0.25 && Math.random() < 0.04) playSpookSound();
 }
 // ── END AUDIO ─────────────────────────────────────────────────────────────
 
@@ -1022,8 +1085,108 @@ function loop() {
 
 loop();
 
+// ── JOYSTICK ──────────────────────────────────────────────────────────────
+(function() {
+  const pad   = document.getElementById('joystickPad');
+  const knob  = document.getElementById('joystickKnob');
+  const PAD_R = 55; // radius of pad
+  const MAX_SPEED = HAWK_SPEED_CHASE * 1.2;
+  let activeId = null;
+  let padRect = null;
+  let isTap = false;
+  let tapStart = 0;
+
+  function getControlledHawk() {
+    // Most recently spawned hawk that is controlled, or most recent overall
+    for (let i = hawks.length - 1; i >= 0; i--) {
+      if (hawks[i].controlled) return hawks[i];
+    }
+    return hawks.length > 0 ? hawks[hawks.length - 1] : null;
+  }
+
+  function setKnob(dx, dy) {
+    knob.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+  }
+
+  pad.addEventListener('pointerdown', function(e) {
+    e.preventDefault();
+    padRect = pad.getBoundingClientRect();
+    activeId = e.pointerId;
+    isTap = true;
+    tapStart = Date.now();
+    pad.setPointerCapture(e.pointerId);
+
+    const h = getControlledHawk();
+    if (h && !h.controlled) {
+      h.controlled = true;
+      h.controlVx = 0;
+      h.controlVy = 0;
+    }
+  });
+
+  pad.addEventListener('pointermove', function(e) {
+    if (e.pointerId !== activeId) return;
+    if (!padRect) return;
+    isTap = false; // moved — not a tap
+
+    const cx = padRect.left + padRect.width / 2;
+    const cy = padRect.top  + padRect.height / 2;
+    let dx = e.clientX - cx;
+    let dy = e.clientY - cy;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    // Clamp knob to pad radius visually
+    const clampedDist = Math.min(dist, PAD_R * 0.7);
+    const angle = Math.atan2(dy, dx);
+    setKnob(Math.cos(angle) * clampedDist, Math.sin(angle) * clampedDist);
+
+    // Map distance to speed
+    const t = Math.min(dist / PAD_R, 1.0);
+    const spd = t * MAX_SPEED;
+    const h = getControlledHawk();
+    if (h && h.controlled) {
+      h.controlVx = Math.cos(angle) * spd;
+      h.controlVy = Math.sin(angle) * spd;
+    }
+  });
+
+  function onRelease(e) {
+    if (e.pointerId !== activeId) return;
+    activeId = null;
+    setKnob(0, 0);
+
+    const h = getControlledHawk();
+    if (!h) return;
+
+    if (isTap && Date.now() - tapStart < 250) {
+      // Tap — return to autonomous
+      h.controlled = false;
+      h.controlVx = 0;
+      h.controlVy = 0;
+    } else {
+      // Finger lifted — keep controlled but zero input (hawk will circle)
+      h.controlVx = 0;
+      h.controlVy = 0;
+    }
+  }
+
+  pad.addEventListener('pointerup', onRelease);
+  pad.addEventListener('pointercancel', onRelease);
+})();
+// ── END JOYSTICK ───────────────────────────────────────────────────────────
+
 canvas.addEventListener('touchend', function(e) {
-  initAudio();
+  var s = document.getElementById('silenceUnlock');
+  if (s) {
+    s.play().then(function() {
+      s.pause();
+      s.currentTime = 0;
+      initAudio();
+    }).catch(function() {
+      initAudio(); // fallback if silence.mp3 fails
+    });
+  } else {
+    initAudio();
+  }
 }, { passive: true });
 
 canvas.addEventListener('pointerdown', function(e) {
