@@ -54,7 +54,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div style="position:fixed;top:4px;left:4px;color:rgba(255,255,255,0.25);font-size:9px;font-family:monospace;pointer-events:none;">v2</div>
+<div style="position:fixed;top:4px;left:4px;color:rgba(255,255,255,0.25);font-size:9px;font-family:monospace;pointer-events:none;">v3</div>
 
 <div id="audioStatus" style="position:fixed;bottom:8px;left:8px;color:rgba(255,255,0,0.8);font-family:monospace;font-size:11px;pointer-events:none;">Audio: not started</div>
 <div id="controls">
@@ -823,18 +823,6 @@ function initAudio() {
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
 
-    // Immediate test tone — single oscillator direct to destination
-    // bypasses masterGain to rule out any gain node issue
-    const test = audioCtx.createOscillator();
-    test.type = 'sine';
-    test.frequency.value = 440;
-    const testG = audioCtx.createGain();
-    testG.gain.value = 0.5;
-    test.connect(testG);
-    testG.connect(audioCtx.destination);
-    test.start(audioCtx.currentTime);
-    test.stop(audioCtx.currentTime + 0.5);
-
     // Flock drone
     flockDrone = audioCtx.createOscillator();
     flockDrone.type = 'sine';
@@ -869,8 +857,24 @@ function initAudio() {
     hawkGain.connect(masterGain);
     hawkTone.start();
 
-    audioReady = true;
-    document.getElementById('audioStatus').textContent = 'Audio: ' + audioCtx.state;
+    // Resume must be called inside user gesture — then play test tone
+    audioCtx.resume().then(function() {
+      audioReady = true;
+      document.getElementById('audioStatus').textContent = 'Audio: ' + audioCtx.state;
+      // Test tone after confirmed running
+      const test = audioCtx.createOscillator();
+      const testG = audioCtx.createGain();
+      test.type = 'sine';
+      test.frequency.value = 440;
+      testG.gain.value = 0.5;
+      test.connect(testG);
+      testG.connect(audioCtx.destination);
+      test.start(audioCtx.currentTime);
+      test.stop(audioCtx.currentTime + 0.5);
+    }).catch(function(e) {
+      document.getElementById('audioStatus').textContent = 'Resume error: ' + e.message;
+    });
+
   } catch(e) {
     document.getElementById('audioStatus').textContent = 'Audio error: ' + e.message;
   }
